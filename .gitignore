@@ -14,3 +14,9 @@ data/inputs/*
 data/outputs/*
 !data/inputs/.gitkeep
 !data/outputs/.gitkeep
+
+# Model checkpoints
+models/checkpoints/
+models/**/*.pth
+models/**/.cache/
+.upstream-vda/
