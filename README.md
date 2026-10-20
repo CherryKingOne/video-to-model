@@ -117,15 +117,17 @@ uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-ba
 - 每个窗口的深度图算完立即写入内存映射文件（memmap），堆内存只保留滑窗缓冲与对齐所需的常数帧；
 - 可视化拆成两阶段：先分块扫描求全局明暗范围，再分块编码 mp4。
 
-因此**内存不再随视频长度增长**，代价是需要磁盘：深度原始值默认保留在 `<输出名>.mmap`（fp16 约 每千帧 @1280×720 占用 1.8 GB），配合同名 `.json` 元数据。
+因此**内存不再随视频长度增长**，代价是跑的过程中需要磁盘：深度原始值会先写进 `<输出名>.mmap`（fp16 约 每千帧 @1280×720 占用 1.8 GB）供渲染使用。**跑完默认自动删除这个 `.mmap` 与同名 `.json`**，只留 mp4；要保留原始深度值请加 `--keep-depth-map`。
 
 ```bash
-# 原始深度值只跑一次，之后反复换参数重渲染（不再占用 GPU）
-uv run video-to-model --render-depth-map data/outputs/MOV_03_17s_depth.mmap --output data/outputs/vis_gray.mp4
+# 需要保留深度数值（做 3D、以后重渲染）时才加 --keep-depth-map
+uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-base --device cuda --keep-depth-map
 
-# 不需要保留原始深度时，让跑完自动删除
-uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-base --device cuda --discard-depth-map
+# 以后基于已保留的深度文件反复换参数重渲染（不再占用 GPU）
+uv run video-to-model --render-depth-map data/outputs/MOV_03_17s_depth.mmap --colormap gray --output data/outputs/vis_gray.mp4
 ```
+
+注意：自动删除只省**长期占用**，**不降低运行过程中的磁盘峰值** —— mp4 是从这个文件渲染出来的，所以 `/data` 仍需要能容下它（见下段）。另外，删了就没有 `.mmap` 可供 `--render-depth-map`，想改配色/码率/音轨只能重跑推理。
 
 默认 fp16 会损失数值精度；如果单帧深度值超出 fp16 表示范围（约 65504，常见于几乎静止的片段使对齐拟合病态），该帧会存为 `inf` 并不参与明暗统计，程序会输出溢出帧数。需要完整数值时用 `--depth-dtype fp32`（磁盘翻倍）。
 
@@ -150,7 +152,8 @@ uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-ba
 | `--max-res` | 解码时长边最大像素，同时决定输出深度分辨率（默认 `1280`） | `--max-res 640` |
 | `--depth-map` | 原始深度 memmap 的存放路径 | `--depth-map data/outputs/run.mmap` |
 | `--depth-dtype` | 深度落盘精度：`fp16`（默认，省一半空间）或 `fp32` | `--depth-dtype fp32` |
-| `--discard-depth-map` | 渲染完成后删除原始深度文件（默认保留） | `--discard-depth-map` |
+| `--keep-depth-map` | **保留**原始深度文件与元数据（默认在渲染完成后自动删除两者） | `--keep-depth-map` |
+| `--discard-depth-map` | 显式声明删除，等同于默认行为（与 `--keep-depth-map` 互斥） | `--discard-depth-map` |
 | `--render-depth-map` | 只重新渲染已有的深度文件，跳过推理（此时可省略 `input`） | `--render-depth-map data/outputs/x.mmap` |
 | `--video-crf` | 可视化 mp4 的 H.264 质量档，**越大体积越小**（默认 `18` 接近无损；`23` 约省一半，`28` 约省三分之二） | `--video-crf 23` |
 | `--audio` | 布尔值控制是否把源视频音轨写进输出视频：`--audio`、`--audio true` 开启，`--audio false` 或省略则关闭（画面流 `-c:v copy` 不重编码，音频转 AAC） | `--audio true` |
@@ -171,7 +174,7 @@ uv run video-to-model --render-depth-map data/outputs/视频片段_depth.mmap --
 将尖括号中的内容替换成自己的值：
 
 ```powershell
-uv run video-to-model <输入视频路径> --model <模型名称> [--device <cpu|cuda>] [--output <输出视频路径>] [--checkpoint <权重文件路径>] [--input-size <尺寸>] [--max-len <帧数>] [--target-fps <帧率>] [--max-res <分辨率>] [--depth-dtype <fp16|fp32>] [--discard-depth-map] [--fp32] [--streaming]
+uv run video-to-model <输入视频路径> --model <模型名称> [--device <cpu|cuda>] [--output <输出视频路径>] [--checkpoint <权重文件路径>] [--input-size <尺寸>] [--max-len <帧数>] [--target-fps <帧率>] [--max-res <分辨率>] [--depth-dtype <fp16|fp32>] [--keep-depth-map] [--fp32] [--streaming]
 ```
 
 例如：
@@ -236,7 +239,7 @@ models/       模型文件与自动下载的权重
 src/          Python 包、CLI、模型注册和推理适配边界
 scripts/      开发验证脚本（与上游逐帧对拍）
 data/inputs/  原始视频
-data/outputs/ 深度生成结果（.mp4 可视化 + .mmap 原始深度值）
+data/outputs/ 深度生成结果（.mp4；加了 --keep-depth-map 才留下 .mmap 原始深度值）
 docs/         目录架构规划与资源/性能对照
 ```
 

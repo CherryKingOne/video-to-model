@@ -60,6 +60,6 @@ video-to-model/
 ## 数据和模型目录
 
 - `data/inputs/` 存放待处理的原始视频。
-- `data/outputs/` 存放生成的深度视频，以及默认保留的原始深度 memmap（`<输出名>.mmap` + 同名 `.json` 元数据）。
+- `data/outputs/` 存放生成的深度视频。推理过程中会先在 `<输出名>.mmap`（+ 同名 `.json` 元数据）里逐块累积原始深度值供渲染使用，**跑完默认自动删除**；加 `--keep-depth-map` 才会保留。
 - 首次选择模型时，程序从对应 Hugging Face 仓库下载权重到 `models/` 下的模型目录；后续运行会复用本地权重。
 - `.gitkeep` 只用于让 Git 保留这些空目录。视频和 `.pth` 权重被 `.gitignore` 排除，不会随代码提交。

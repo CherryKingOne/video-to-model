@@ -41,7 +41,7 @@ def run_video_inference(
     max_res: int = 1280,
     depth_map: Path | None = None,
     depth_dtype: str = "fp16",
-    keep_depth_map: bool = True,
+    keep_depth_map: bool = False,
     video_crf: int = 18,
     audio: bool = False,
     colormap: str = "inferno",
@@ -50,7 +50,8 @@ def run_video_inference(
 
     Memory stays bounded by one inference window: frames are decoded lazily and each depth map is
     written to a memory-mapped volume as soon as it is produced, instead of being collected in a
-    list. The mp4 is rendered afterwards in two streaming passes over that file.
+    list. The mp4 is rendered afterwards in two streaming passes over that file, which is removed
+    again unless the caller asks to keep it.
     """
     import torch
     from tqdm import tqdm
@@ -138,6 +139,10 @@ def run_video_inference(
             f"用 --render-depth-map {map_path}，无需重跑推理）"
         )
     else:
+        disk_bytes = map_path.stat().st_size if map_path.is_file() else 0
         map_path.unlink(missing_ok=True)
         depth_store.metadata_path(map_path).unlink(missing_ok=True)
-        print("原始深度: 已按 --discard-depth-map 删除，仅保留可视化视频")
+        print(
+            f"原始深度: 已自动删除 {map_path.name} 与 {depth_store.metadata_path(map_path).name}"
+            f"（回收 {disk_bytes / 1024**3:.1f} GB；要保留数值请加 --keep-depth-map）"
+        )

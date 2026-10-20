@@ -53,10 +53,19 @@ def build_parser() -> argparse.ArgumentParser:
     storage = parser.add_argument_group("depth output")
     storage.add_argument("--depth-map", type=Path, help="Path for the raw depth volume (default: <output>.stem.mmap)")
     storage.add_argument("--depth-dtype", choices=("fp16", "fp32"), default="fp16", help="Depth volume precision (default: fp16)")
-    storage.add_argument(
-        "--discard-depth-map",
+    depth_group = storage.add_mutually_exclusive_group()
+    depth_group.add_argument(
+        "--keep-depth-map",
+        dest="keep_depth_map",
         action="store_true",
-        help="Delete the raw depth volume after rendering it (default: keep it)",
+        default=False,
+        help="保留原始深度文件与元数据（默认：渲染完成后自动删除）",
+    )
+    depth_group.add_argument(
+        "--discard-depth-map",
+        dest="keep_depth_map",
+        action="store_false",
+        help="显式声明删除原始深度文件（等同于默认行为）",
     )
     storage.add_argument(
         "--render-depth-map", type=Path, help="Only re-render this existing depth volume into a video"
@@ -159,7 +168,7 @@ def main() -> int:
             max_res=args.max_res,
             depth_map=_resolve(args.depth_map, paths.root),
             depth_dtype=args.depth_dtype,
-            keep_depth_map=not args.discard_depth_map,
+            keep_depth_map=args.keep_depth_map,
             video_crf=args.video_crf,
             audio=args.audio == "true",
             colormap=args.colormap,

@@ -57,7 +57,7 @@
 指标含义：
 
 - **进程峰值 RSS**（Resident Set Size，峰值即 `ru_maxrss` / Linux `VmHWM`）：进程实际占用的物理内存最高水位，也就是容器内存限额真正卡的那个量。它包含三部分：torch/Python 基线、本节的常数缓冲、以及 **memmap 被映射进来的页**。前两项不随帧数变，第三项会涨——但它是 file-backed clean page，内核可随时丢弃，**不参与 OOM 判定**。旧实现的 154 GB 全是不可回收的匿名堆页，所以会被 `SIGKILL`。
-- **深度文件**：`<输出名>.mmap`，形状 `(frames, height, width)` 的裸二进制原始深度值（默认 fp16 = 每像素 2 字节），配同名 `.json` 记录 `frames/height/width/dtype/fps/depth_min/depth_max`。mp4 只存归一化后的 8bit 伪彩色且经 H.264 有损压缩，**无法反解出深度数值**，所以做 3D/测量/重新渲染必须依赖这个文件；不需要就加 `--discard-depth-map`。
+- **深度文件**：`<输出名>.mmap`，形状 `(frames, height, width)` 的裸二进制原始深度值（默认 fp16 = 每像素 2 字节），配同名 `.json` 记录 `frames/height/width/dtype/fps/depth_min/depth_max`。mp4 只存归一化后的 8bit 伪彩色且经 H.264 有损压缩，**无法反解出深度数值**，所以做 3D/测量/重新渲染必须依赖这个文件。**跑完默认自动删除两者**，要留着就加 `--keep-depth-map`。
 - **耗时**：下表为本地 CPU + 随机初始化权重 + `--input-size 168` 的测量，仅用于说明资源结构，不是 GPU 的时间预期。
 
 | 帧数 | 进程峰值 RSS | 深度文件 | 耗时 |
@@ -101,7 +101,7 @@ depth = np.memmap("data/outputs/x_depth.mmap", dtype=np.float16, mode="r",
 | `--max-res` | 每像素字节数按平方下降 → 磁盘、窗口缓冲、耗时同步下降（同时决定输出分辨率） |
 | `--max-len` | 只处理前 N 帧 |
 | `--depth-dtype fp16/fp32` | 磁盘 1:2 |
-| `--discard-depth-map` | 跑完自动删除深度文件 → **长期占用归零，但运行过程中仍需写入全量空间**（mp4 是从该文件渲染的） |
+| `--keep-depth-map` | 保留深度文件与元数据（**不加则跑完自动删除**）；自动删除只省长期占用，**不降低过程峰值**（mp4 是从该文件渲染的） |
 | `--input-size` | 显存与计算量近似平方下降，几乎不影响 RAM |
 | `--video-crf` | 只缩小可视化 mp4（画面流不重编码不影响深度文件）；默认 18，23≈省一半，28≈省三分之二 |
 | `--audio`（`true`/`false`） | 把源视频音轨混进输出 mp4：画面流 `-c:v copy` 无损、不重跑推理，内存/磁盘影响可忽略 |
@@ -125,7 +125,7 @@ depth = np.memmap("data/outputs/x_depth.mmap", dtype=np.float16, mode="r",
 
 | 手段 | 预计收益 | 代价 | 状态 |
 |---|---|---|---|
-| `--discard-depth-map` | 长期占用归零（**过程峰值不变**，仍需 ≈21 GB 写入空间） | 不可复渲染、不可复用深度做 3D | ✅ 已实现 |
+| 默认行为（不加 `--keep-depth-map`） | 长期占用归零（**过程峰值不变**，仍需 ≈21 GB 写入空间） | 不可复渲染、不可复用深度做 3D | ✅ 已实现 |
 | `--target-fps 10`（源 30fps） | ÷3 | 时序更稀，快速运动处观感下降 | ✅ 已实现 |
 | `--max-res 640` | ÷4 | 深度图/输出分辨率下降 | ✅ 已实现 |
 | 深度存半分辨率（`h/2 × w/2`） | ÷4 | 深度细节损失；上采样回原分辨率仍可渲染 | 未实现，可加 `--depth-scale` |
@@ -166,11 +166,11 @@ depth = np.memmap("data/outputs/x_depth.mmap", dtype=np.float16, mode="r",
 12,000 帧 @1280×720，小显卡 Linux 服务器（CUDA 12.4）：
 
 - 默认命令即可跑通：内存 ≈2.5~3 GB（与长度无关）、磁盘 21 GB、GPU 约 13 分钟。
-- **先确认 `/data` 有 ≥25 GB 空闲**。注意这个空间在跑的过程中就需要：mp4 是从深度文件渲染的，`--discard-depth-map` 只减少长期保留，不减少过程峰值。不够就按优先级选一条：
+- **先确认 `/data` 有 ≥25 GB 空闲**。注意这个空间在跑的过程中就需要：mp4 是从深度文件渲染的，默认跑完自动删除只减少长期保留，**不减少过程峰值**。不够就按优先级选一条：
   1. 中转文件换个大盘：`--depth-map /别的盘/scratch/depth.mmap`，跑完自己删；
   2. 要原始深度但可接受稀一点 → `--target-fps 10`（≈7 GB）；
   3. 兼顾 → `--target-fps 10 --max-res 960`（≈4 GB）。
-- 只要可视化、不需要数值：再加 `--discard-depth-map`，长期不留大文件（过程峰值依旧）。
+- 只要可视化、不需要数值：什么都不用加（默认就会删掉大文件，只留 mp4）；需要数值做 3D 时加 `--keep-depth-map`。
 - 如果显存也吃紧，先降 `--input-size` 到 420，再考虑 `--streaming`。
 
 ## 5. 复现这些数字
