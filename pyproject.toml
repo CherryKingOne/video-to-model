@@ -7,8 +7,10 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "huggingface-hub>=0.30.0",
     "numpy>=1.26",
-    "torch==2.14.1",
-    "torchvision==0.29.1",
+    # CUDA 12.4：官方只为 torch 2.6.0 / torchvision 0.21.0 发布 cu124 wheel，因此从 2.14.1 降级。
+    # CUDA 13 构建要求较新的驱动且已放弃 Maxwell/Pascal/Volta，小显卡服务器用不了。
+    "torch==2.6.0",
+    "torchvision==0.21.0",
     "opencv-python>=4.9",
     "imageio>=2.34",
     "imageio-ffmpeg>=0.4.9",
@@ -32,3 +34,21 @@ packages = ["src/video_to_model"]
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 default = true
+
+# 官方 CUDA 12.4 wheel 索引；explicit 表示只给下面显式映射的包使用。
+# 该索引只发布 linux_x86_64 / win_amd64 wheel，所以 marker 限定到这两种机器，
+# macOS 与 linux aarch64 等平台自动回退到上面的默认 PyPI 镜像。
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { index = "pytorch-cu124", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+]
+torchvision = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { index = "pytorch-cu124", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+]

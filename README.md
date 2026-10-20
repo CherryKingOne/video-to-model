@@ -19,6 +19,26 @@ uv sync
 uv run video-to-model --help
 ```
 
+## CUDA 版本：固定 12.4
+
+项目固定使用 CUDA 12.4 的 PyTorch 官方构建，**不使用 CUDA 13**：cu13 构建要求较新的驱动，并且已经放弃 Maxwell/Pascal/Volta 架构（GTX 10 系、T4、V100 等小显卡服务器跑不了）；cu124 构建覆盖 sm_50 及以上，驱动要求低得多。
+
+- 版本锁定：`torch==2.6.0` / `torchvision==0.21.0`。官方只为这两个版本发布 cu124 wheel，所以 torch 不能继续用更新的 2.x（2.13+ 只提供 cu126/cu130/cu132）。
+- 取包来源：Linux x86_64 与 Windows x86_64 从 `https://download.pytorch.org/whl/cu124` 拉 `+cu124` wheel；macOS、Linux aarch64 等无 cu124 wheel 的平台自动回退清华 PyPI 镜像。配置见 `pyproject.toml` 的 `[[tool.uv.index]]` 与 `[tool.uv.sources]`。
+- CUDA 运行库：`nvidia-*-cu12==12.4.*`（cuBLAS 12.4.5.8、cudart 12.4.127、cuDNN 9.1.0.70、NCCL 2.21.5）+ `triton==3.2.0`，均由 `uv sync` 自动装好，不需要在服务器上单独安装 CUDA Toolkit。
+- 驱动要求：`nvidia-smi` 显示的 CUDA Version ≥ 12.4（Linux 驱动 ≥ 550）。
+
+在 GPU 服务器上安装并验证：
+
+```bash
+uv sync
+uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
+预期输出形如 `2.6.0+cu124 12.4 True`。若第三项是 `False`，先检查 `nvidia-smi`；若 `torch.__version__` 没有 `+cu124` 后缀，说明当前机器不是 Linux/Windows x86_64（macOS 开发机就是这种情况，用 `--device cpu` 即可）。
+
+若服务器访问 `download.pytorch.org` 超时，可临时注释掉 `[tool.uv.sources]` 中的两条映射并重新 `uv lock`：清华镜像上 `torch==2.6.0` 的 Linux wheel 依赖同为 CUDA 12.4，结果等价。
+
 ## 输入视频
 
 把原始视频放入：
@@ -38,7 +58,7 @@ uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-ba
 uv run video-to-model data/inputs/MOV_03_17s.mp4 --model metric-video-depth-anything-base
 ```
 
-支持 CPU 和 CUDA 推理。默认使用 CPU，因此没有 NVIDIA GPU/CUDA 环境时直接运行即可；有 CUDA 环境时可显式指定 `--device cuda`：
+支持 CPU 和 CUDA（12.4，见上一节）推理。默认使用 CPU，因此没有 NVIDIA GPU/CUDA 环境时直接运行即可；有 CUDA 环境时可显式指定 `--device cuda`：
 
 ```powershell
 uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-base --device cuda
