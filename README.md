@@ -107,6 +107,32 @@ uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-ba
 
 本次报错是连接 Hugging Face 时超时，权重文件尚未开始传输。修复网络/端点后重跑同一命令即可；下载器会复用已完成的本地文件。
 
+## 长视频与内存（分批推理）
+
+上游实现会先把整段视频解码驻留内存，再把所有窗口的深度图累积在一个 list 里，最后一次性归一化渲染 —— 峰值内存随帧数线性增长（约 `帧数 × 宽 × 高 × 15` 字节，1.2 万帧 @1280×720 就需要 ~150 GB），长视频会被系统 OOM 直接杀掉（进程无任何报错，`echo $?` 为 137）。
+
+本项目把推理改成了常数内存的流式管线，结果与上游逐位一致（`scripts/verify_streaming.py` 对拍验证）：
+
+- 视频按需逐帧解码，不再全量常驻；
+- 每个窗口的深度图算完立即写入内存映射文件（memmap），堆内存只保留滑窗缓冲与对齐所需的常数帧；
+- 可视化拆成两阶段：先分块扫描求全局明暗范围，再分块编码 mp4。
+
+因此**内存不再随视频长度增长**，代价是需要磁盘：深度原始值默认保留在 `<输出名>.mmap`（fp16 约 每千帧 @1280×720 占用 1.8 GB），配合同名 `.json` 元数据。
+
+```bash
+# 原始深度值只跑一次，之后反复换参数重渲染（不再占用 GPU）
+uv run video-to-model --render-depth-map data/outputs/MOV_03_17s_depth.mmap --output data/outputs/vis_gray.mp4
+
+# 不需要保留原始深度时，让跑完自动删除
+uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-base --device cuda --discard-depth-map
+```
+
+默认 fp16 会损失数值精度；如果单帧深度值超出 fp16 表示范围（约 65504，常见于几乎静止的片段使对齐拟合病态），该帧会存为 `inf` 并不参与明暗统计，程序会输出溢出帧数。需要完整数值时用 `--depth-dtype fp32`（磁盘翻倍）。
+
+如果只是想降低资源占用而不关心原始深度，直接抽帧更便宜：`--target-fps 10 --max-res 640` 可把帧数和每帧字节数同时降几倍，内存与耗时一并下降。
+
+两种实现的逐项内存构成、峰值公式、实测数字以及后续可以继续压降的手段，见 [docs/memory-optimization.md](docs/memory-optimization.md)。
+
 ## 常用参数
 
 | 参数 | 用途 | 示例 |
@@ -117,19 +143,26 @@ uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-ba
 | `--device` | 推理设备：`cpu` 或 `cuda`，默认 `cpu` | `--device cuda` |
 | `--checkpoint` | 指定已有权重文件 | `--checkpoint models/path/to/model.pth` |
 | `--input-size` | 模型输入尺寸，正数且为 14 的倍数 | `--input-size 518` |
-| `--fp32` | 关闭 FP16 autocast | `--fp32` |
-| `--streaming` | 使用实验性流式模式 | `--streaming` |
+| `--fp32` | 关闭 FP16 autocast（只影响推理精度，不影响磁盘深度格式） | `--fp32` |
+| `--streaming` | 实验性逐帧流式模式：用 temporal cache 代替滑窗对齐，显存最省、速度最快，但精度下降（上游 d1 从 0.926 降到 0.836），且上游实现没有 metric 分支 | `--streaming` |
+| `--max-len` | 最多解码多少帧后停下，`-1` 不限（默认 `-1`） | `--max-len 3000` |
+| `--target-fps` | 抽帧目标帧率，`-1` 保留原帧率（默认 `-1`） | `--target-fps 10` |
+| `--max-res` | 解码时长边最大像素，同时决定输出深度分辨率（默认 `1280`） | `--max-res 640` |
+| `--depth-map` | 原始深度 memmap 的存放路径 | `--depth-map data/outputs/run.mmap` |
+| `--depth-dtype` | 深度落盘精度：`fp16`（默认，省一半空间）或 `fp32` | `--depth-dtype fp32` |
+| `--discard-depth-map` | 渲染完成后删除原始深度文件（默认保留） | `--discard-depth-map` |
+| `--render-depth-map` | 只重新渲染已有的深度文件，跳过推理（此时可省略 `input`） | `--render-depth-map data/outputs/x.mmap` |
 
 ## 运行进度
 
-模型权重下载显示下载进度，模型初始化显示阶段进度，上游滑窗推理显示视频帧处理进度。
+模型权重下载显示下载进度，模型初始化显示阶段进度，推理阶段按帧显示进度（总数在容器不报告帧数时为上界估计）。
 
 ## 命令模板 / 占位符
 
 将尖括号中的内容替换成自己的值：
 
 ```powershell
-uv run video-to-model <输入视频路径> --model <模型名称> [--device <cpu|cuda>] [--output <输出视频路径>] [--checkpoint <权重文件路径>] [--input-size <尺寸>] [--fp32] [--streaming]
+uv run video-to-model <输入视频路径> --model <模型名称> [--device <cpu|cuda>] [--output <输出视频路径>] [--checkpoint <权重文件路径>] [--input-size <尺寸>] [--max-len <帧数>] [--target-fps <帧率>] [--max-res <分辨率>] [--depth-dtype <fp16|fp32>] [--discard-depth-map] [--fp32] [--streaming]
 ```
 
 例如：
@@ -151,9 +184,10 @@ PowerShell 中不要原样输入尖括号占位内容；请替换成真实路径
 ```text
 models/       模型文件与自动下载的权重
 src/          Python 包、CLI、模型注册和推理适配边界
+scripts/      开发验证脚本（与上游逐帧对拍）
 data/inputs/  原始视频
- data/outputs/ 深度生成结果
- docs/         目录架构规划
+data/outputs/ 深度生成结果（.mp4 可视化 + .mmap 原始深度值）
+docs/         目录架构规划与资源/性能对照
 ```
 
 目录规划详见 [docs/directory-structure.md](docs/directory-structure.md)。

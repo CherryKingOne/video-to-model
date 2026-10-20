@@ -15,6 +15,10 @@ data/outputs/*
 !data/inputs/.gitkeep
 !data/outputs/.gitkeep
 
+# Raw depth volumes (large; may be written outside data/outputs via --depth-map)
+*.mmap
+*.mmap.json
+
 # Model checkpoints
 models/checkpoints/
 models/**/*.pth

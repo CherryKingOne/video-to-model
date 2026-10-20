@@ -23,7 +23,12 @@ def build_depth_model(
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     import torch
-    from video_to_model.upstream.video_depth_anything.video_depth import VideoDepthAnything
+    if streaming:
+        # The upstream streaming implementation takes no ``metric`` argument: it has no
+        # cross-window alignment stage, so scale/shift fitting simply does not happen.
+        from video_to_model.upstream.video_depth_anything.video_depth_stream import VideoDepthAnything
+    else:
+        from video_to_model.upstream.video_depth_anything.video_depth import VideoDepthAnything
 
     if device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("The selected checkpoint is available, but PyTorch cannot access a CUDA device. Use --device cpu or install a CUDA-enabled PyTorch build.")
@@ -33,7 +38,10 @@ def build_depth_model(
         "vitl": {"features": 256, "out_channels": [256, 512, 1024, 1024]},
     }
     with tqdm(total=3, desc="加载模型", unit="阶段") as progress:
-        model = VideoDepthAnything(encoder=encoder, metric=metric, **configs[encoder])
+        if streaming:
+            model = VideoDepthAnything(encoder=encoder, **configs[encoder])
+        else:
+            model = VideoDepthAnything(encoder=encoder, metric=metric, **configs[encoder])
         progress.update(1)
         state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
         model.load_state_dict(state, strict=True)
