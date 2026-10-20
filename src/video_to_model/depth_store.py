@@ -123,19 +123,23 @@ def iter_depth_blocks(depth_map: Path, *, meta: dict[str, Any] | None = None, bl
         del array
 
 
-def global_min_max(depth_map: Path, *, meta: dict[str, Any] | None = None) -> tuple[float, float]:
+def global_min_max(depth_map: Path, *, meta: dict[str, Any] | None = None, progress: bool = True) -> tuple[float, float]:
     """Return cached or recomputed depth range, ignoring non-finite values."""
+    from tqdm import tqdm
+
     meta = meta or load_metadata(depth_map)
     cached = meta.get("depth_min"), meta.get("depth_max")
     if cached[0] is not None and cached[1] is not None:
         return float(cached[0]), float(cached[1])
 
     low, high = float("inf"), float("-inf")
-    for block in iter_depth_blocks(depth_map, meta=meta):
-        finite = block[np.isfinite(block)]
-        if finite.size:
-            low = min(low, float(finite.min()))
-            high = max(high, float(finite.max()))
+    with tqdm(total=int(meta["frames"]), desc="统计明暗范围", unit="帧", disable=not progress) as bar:
+        for block in iter_depth_blocks(depth_map, meta=meta):
+            finite = block[np.isfinite(block)]
+            if finite.size:
+                low = min(low, float(finite.min()))
+                high = max(high, float(finite.max()))
+            bar.update(len(block))
     if low == float("inf") or high == float("-inf"):
         low, high = 0.0, 1.0
     return low, high
@@ -159,17 +163,89 @@ def update_metadata(depth_map: Path, **updates: Any) -> dict[str, Any]:
     return meta
 
 
-def render_depth_map(depth_map: Path, output_video: Path, *, fps: float | None = None, colormap: str = "inferno") -> None:
-    """Encode a depth volume to an mp4 in two streaming passes over the file."""
-    import imageio
+def ffmpeg_executable() -> str:
+    """Path to the ffmpeg binary bundled with imageio-ffmpeg (no system install needed)."""
+    from imageio_ffmpeg import get_ffmpeg_exe
+
+    return get_ffmpeg_exe()
+
+
+def has_audio_stream(video: Path) -> bool:
+    """Detect an audio track by reading ffmpeg's stream listing."""
+    import subprocess
+
+    listing = subprocess.run([ffmpeg_executable(), "-hide_banner", "-i", str(video)], capture_output=True, text=True)
+    return "Audio:" in listing.stderr
+
+
+def mux_audio(video: Path, audio_source: Path) -> bool:
+    """Add the first audio track of ``audio_source`` to ``video`` in place.
+
+    The depth picture stream is copied untouched, so muxing costs no quality and no re-encode.
+    Returns ``False`` when the source carries no audio at all.
+    """
+    import subprocess
+
+    if not has_audio_stream(audio_source):
+        return False
+    temporary = video.with_name(f"{video.stem}.audio.mp4")
+    subprocess.run(
+        [
+            ffmpeg_executable(),
+            "-y",
+            "-i", str(video),
+            "-i", str(audio_source),
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-shortest",
+            str(temporary),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    temporary.replace(video)
+    return True
+
+
+def color_lut(colormap: str) -> np.ndarray:
+    """Sample a matplotlib colormap into a 256-entry lookup table.
+
+    Discrete maps (``inferno``) expose their table directly, which keeps upstream's exact
+    colours; continuous maps (``gray``, ``hot``) have no ``.colors`` and must be sampled.
+    """
     from matplotlib import colormaps
+
+    try:
+        return np.array(colormaps[colormap].colors)
+    except AttributeError:
+        return np.array(colormaps[colormap](np.linspace(0.0, 1.0, 256)))
+
+
+def render_depth_map(
+    depth_map: Path,
+    output_video: Path,
+    *,
+    fps: float | None = None,
+    colormap: str = "inferno",
+    crf: int = 18,
+    audio_source: Path | None = None,
+) -> bool | None:
+    """Encode a depth volume to an mp4 in two streaming passes over the file.
+
+    Returns ``None`` when no audio was requested, otherwise whether a track was muxed in.
+    """
+    import imageio
+    from tqdm import tqdm
 
     meta = load_metadata(depth_map)
     cached_range = meta.get("depth_min") is not None
     depth_min, depth_max = global_min_max(depth_map, meta=meta)
     if not cached_range:
         update_metadata(depth_map, depth_min=depth_min, depth_max=depth_max)
-    lut = np.array(colormaps[colormap].colors)
+    lut = color_lut(colormap)
     output_video = Path(output_video)
     output_video.parent.mkdir(parents=True, exist_ok=True)
 
@@ -178,11 +254,17 @@ def render_depth_map(depth_map: Path, output_video: Path, *, fps: float | None =
         fps=fps if fps is not None else float(meta["fps"]),
         macro_block_size=1,
         codec="libx264",
-        ffmpeg_params=["-crf", "18"],
+        ffmpeg_params=["-crf", str(crf)],
     )
     try:
-        for block in iter_depth_blocks(depth_map, meta=meta):
-            for frame in visualize(block, depth_min, depth_max, lut):
-                writer.append_data(frame)
+        with tqdm(total=int(meta["frames"]), desc="编码视频", unit="帧") as bar:
+            for block in iter_depth_blocks(depth_map, meta=meta):
+                for frame in visualize(block, depth_min, depth_max, lut):
+                    writer.append_data(frame)
+                bar.update(len(block))
     finally:
         writer.close()
+
+    if audio_source is None:
+        return None
+    return mux_audio(output_video, Path(audio_source))

@@ -152,10 +152,19 @@ uv run video-to-model data/inputs/MOV_03_17s.mp4 --model video-depth-anything-ba
 | `--depth-dtype` | 深度落盘精度：`fp16`（默认，省一半空间）或 `fp32` | `--depth-dtype fp32` |
 | `--discard-depth-map` | 渲染完成后删除原始深度文件（默认保留） | `--discard-depth-map` |
 | `--render-depth-map` | 只重新渲染已有的深度文件，跳过推理（此时可省略 `input`） | `--render-depth-map data/outputs/x.mmap` |
+| `--video-crf` | 可视化 mp4 的 H.264 质量档，**越大体积越小**（默认 `18` 接近无损；`23` 约省一半，`28` 约省三分之二） | `--video-crf 23` |
+| `--audio` | 布尔值控制是否把源视频音轨写进输出视频：`--audio`、`--audio true` 开启，`--audio false` 或省略则关闭（画面流 `-c:v copy` 不重编码，音频转 AAC） | `--audio true` |
+| `--colormap` | 可视化配色；`gray` 输出传统**灰度**深度视频，`gray_r` 明暗反向（默认 `inferno`，即热成像风格） | `--colormap gray` |
 
 ## 运行进度
 
-模型权重下载显示下载进度，模型初始化显示阶段进度，推理阶段按帧显示进度（总数在容器不报告帧数时为上界估计）。
+模型权重下载显示下载进度，模型初始化显示阶段进度，推理阶段按帧显示进度，渲染阶段额外显示两个进度条：`统计明暗范围`（第一趟扫描深度文件）与 `编码视频`（第二趟读回并写 mp4）。总数在容器不报告帧数时为上界估计。
+
+可视化 mp4 默认使用 CRF 18（接近视觉无损），体积通常比手机压出来的源视频大很多；要缩小用 `--video-crf 23`（约省一半）或 `28`（约省三分之二）。已有的深度文件可直接降低质量重渲染，不必重跑推理：
+
+```bash
+uv run video-to-model --render-depth-map data/outputs/视频片段_depth.mmap --video-crf 23 --output data/outputs/视频片段_depth_小.mp4
+```
 
 ## 命令模板 / 占位符
 
@@ -172,6 +181,47 @@ uv run video-to-model data/inputs/<视频文件名>.mp4 --model <模型名称> -
 ```
 
 PowerShell 中不要原样输入尖括号占位内容；请替换成真实路径或选项值。省略 `--output` 时，默认目标为 `data/outputs/<输入文件名>_depth.mp4`。
+
+## 输出视频的音轨
+
+深度视频的画面是逐帧重新绘制的新视频流，所以**默认没有声音**（不是丢了，而是本来就没有）。“画”和“声”是两条独立的流，需要显式合并：
+
+```bash
+uv run video-to-model data/inputs/视频片段.mp4 --model video-depth-anything-base --device cuda --audio
+```
+
+加 `--audio` 后，编码完成会把源视频的第一条音轨混进输出文件：画面流直接 `-c:v copy` 不重编码（**不造成任何画质损失、几乎不耗时**），音频转成 AAC 以兼容 mp4 容器，并用 `-shortest` 对齐时长。若源视频本身无声轨，会打印 `源视频没有音轨，输出保持静音` 并正常完成。
+
+它是布尔开关。`--audio` 与 `--audio true` 等价（表示需要声音）；`--audio false` 或省略该参数则表示不需要：
+
+```bash
+uv run video-to-model 输入.mp4 --model video-depth-anything-base --device cuda --audio        # 有声
+uv run video-to-model 输入.mp4 --model video-depth-anything-base --device cuda --audio true   # 有声
+uv run video-to-model 输入.mp4 --model video-depth-anything-base --device cuda --audio false  # 无声（默认）
+```
+
+已有的深度文件也可以补上音轨（不需要重跑推理）：`--render-depth-map` 会从深度文件的元数据里找回录下的源视频路径，所以要求那个源文件仍在原位：
+
+```bash
+uv run video-to-model --render-depth-map data/outputs/视频片段_depth.mmap --audio --output data/outputs/视频片段_depth_有声.mp4
+```
+
+## 可视化配色（灰度深度视频）
+
+输出视频看着像**热成像**是正常的：上游 `save_video` 写死了 matplotlib 的 `inferno` 色表，那本来就是给热图/密度图用的感知均匀色表，不是本项目选的。现在可以用 `--colormap` 换掉：
+
+```bash
+# 传统灰度深度视频（近/远用明暗表示）
+uv run video-to-model --render-depth-map data/outputs/视频片段_depth.mmap --colormap gray --output data/outputs/灰度深度.mp4
+```
+
+可选值：`inferno`（默认，热图风）、`gray`（灰度）、`gray_r`（灰度反向）、`viridis`、`magma`、`plasma`、`turbo`、`hot`。
+
+两点要记住：
+
+- 映射规则始终是 **“深度值越大越亮”**，与色表无关；换色表**不改变任何深度数值**（`.mmap` 内容完全一致）。
+- “亮是近还是远”取决于模型类型：相对深度模型（`video-depth-*`）数值大通常表示更近；metric 模型输出的是距离值，数值大表示更远。拿不准就取一帧看已知远近物体的数值大小即可。
+- 灰度视频只是可视化产物。要拿数值做 3D，请直接读 `.mmap`，不要用任何 mp4 反解。
 
 ## 模型仓库
 

@@ -42,6 +42,9 @@ def run_video_inference(
     depth_map: Path | None = None,
     depth_dtype: str = "fp16",
     keep_depth_map: bool = True,
+    video_crf: int = 18,
+    audio: bool = False,
+    colormap: str = "inferno",
 ) -> None:
     """Stream a video through the model, store depths on disk, then encode the visualization.
 
@@ -116,7 +119,11 @@ def run_video_inference(
         }
     )
 
-    depth_store.render_depth_map(map_path, output_path)
+    muxed = depth_store.render_depth_map(
+        map_path, output_path, crf=video_crf, colormap=colormap, audio_source=input_path if audio else None
+    )
+    if muxed is False:
+        print(f"源视频没有音轨，输出保持静音: {input_path}")
 
     if store.overflow_frames:
         print(
@@ -124,8 +131,13 @@ def run_video_inference(
             "若要精确深度值请用 --depth-dtype fp32 重跑。"
         )
 
+    print(f"完成: {output_path}（可视化视频，配色 {colormap}{'，已带上源视频音轨' if muxed else ''}）")
     if keep_depth_map:
-        print(f"深度原始值已保存: {map_path}（可用 --render-depth-map {map_path} 重新渲染）")
+        print(
+            f"原始深度: {map_path}（{store.count} 帧；如需换帧率或码率重出视频，"
+            f"用 --render-depth-map {map_path}，无需重跑推理）"
+        )
     else:
         map_path.unlink(missing_ok=True)
         depth_store.metadata_path(map_path).unlink(missing_ok=True)
+        print("原始深度: 已按 --discard-depth-map 删除，仅保留可视化视频")

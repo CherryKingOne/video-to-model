@@ -18,6 +18,10 @@ MODEL_NAMES = (
     "metric-video-depth-anything-large",
 )
 
+# 可视化配色。上游固定用 inferno（热图风格），gray 为传统灰度深度图。
+# 映射规则是“深度值越大越亮”，与色表无关，所以换色表不改变任何数值。
+COLORMAPS = ("inferno", "gray", "gray_r", "viridis", "magma", "plasma", "turbo", "hot")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -54,7 +58,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Delete the raw depth volume after rendering it (default: keep it)",
     )
-    storage.add_argument("--render-depth-map", type=Path, help="Only re-render this existing depth volume into a video")
+    storage.add_argument(
+        "--render-depth-map", type=Path, help="Only re-render this existing depth volume into a video"
+    )
+    storage.add_argument(
+        "--video-crf",
+        type=int,
+        default=18,
+        help="H.264 quality for the rendered video; larger means smaller files (default 18, near-lossless; 23~28 saves space)",
+    )
+    storage.add_argument(
+        "--audio",
+        nargs="?",
+        const="true",
+        default="false",
+        choices=("true", "false"),
+        help="是否把源视频音轨写进输出视频：--audio 或 --audio true 开启，--audio false 关闭（默认关闭）",
+    )
+    storage.add_argument(
+        "--colormap",
+        default="inferno",
+        choices=COLORMAPS,
+        help="可视化配色；gray 输出灰度深度视频，gray_r 明暗反向（默认 inferno）",
+    )
     return parser
 
 
@@ -81,12 +107,20 @@ def main() -> int:
             map_path = _resolve(args.render_depth_map, paths.root)
             if not map_path.is_file():
                 parser.error(f"Depth map does not exist: {map_path}")
-            from video_to_model.depth_store import render_depth_map
+            from video_to_model.depth_store import load_metadata, render_depth_map
 
             output_path = _resolve(args.output, paths.root) or map_path.with_suffix(".mp4")
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            render_depth_map(map_path, output_path)
-            print(f"已重新渲染: {output_path}")
+            audio_source = None
+            if args.audio == "true":
+                source = load_metadata(map_path).get("source")
+                if not source or not Path(source).is_file():
+                    parser.error(f"--audio 需要深度文件记录的源视频可访问，但找不到: {source}")
+                audio_source = Path(source)
+            muxed = render_depth_map(map_path, output_path, crf=args.video_crf, colormap=args.colormap, audio_source=audio_source)
+            if muxed is False:
+                print(f"源视频没有音轨，输出保持静音: {audio_source}")
+            print(f"已重新渲染: {output_path}{'（已带上音轨）' if muxed else ''}")
             return 0
 
         if args.input is None:
@@ -126,6 +160,9 @@ def main() -> int:
             depth_map=_resolve(args.depth_map, paths.root),
             depth_dtype=args.depth_dtype,
             keep_depth_map=not args.discard_depth_map,
+            video_crf=args.video_crf,
+            audio=args.audio == "true",
+            colormap=args.colormap,
         )
     except (ModelNotConfiguredError, RuntimeError, OSError, ValueError) as exc:
         parser.error(str(exc))
