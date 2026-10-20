@@ -128,7 +128,7 @@ def main() -> None:
     check("metric 分支与上游完全相同", np.array_equal(ours, reference))
 
     # --- depth volume round-trip
-    for dtype, tolerance in (("fp32", {"rtol": 0, "atol": 0}), ("fp16", {"rtol": 2e-3, "atol": 1e-3})):
+    for dtype, tolerance in (("fp32", {"rtol": 0, "atol": 0}), ("fp16", {"rtol": 2e-3, "atol": 2e-3})):
         path = WORK / f"depth_{dtype}.mmap"
         store = depth_store.DepthStore(path, height=height, width=width, dtype=dtype, capacity=8)
         for start in range(0, len(ours), 7):
@@ -139,10 +139,13 @@ def main() -> None:
         back = np.concatenate(list(depth_store.iter_depth_blocks(path, block_frames=5)), axis=0)
         check(f"{dtype}: memmap 往返读写一致", back.shape == ours.shape and np.allclose(back, ours, **tolerance), f"shape={back.shape}")
         low, high = depth_store.global_min_max(path)
+        # 统计值本身也存不了超过该 dtype 的精度：fp16 在 4.34 附近的格点间距约为 0.0039，
+        # 因此阈值必须按 dtype 的机器精度缩放，而不是固定绝对值。
+        tol = np.finfo(depth_store.DTYPES[dtype]).eps * max(abs(low), abs(high), 1.0)
         check(
             f"{dtype}: 分块统计等于整块统计",
-            abs(low - float(ours.min())) < 1e-3 and abs(high - float(ours.max())) < 1e-3,
-            f"range=({low:.4f}, {high:.4f})",
+            abs(low - float(ours.min())) <= tol and abs(high - float(ours.max())) <= tol,
+            f"range=({low:.4f}, {high:.4f}) 允许误差={tol:.2e}",
         )
         meta = depth_store.load_metadata(path)
         check(f"{dtype}: sidecar 记录帧数与 dtype", meta["frames"] == len(ours) and meta["dtype"] == dtype)
