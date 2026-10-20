@@ -19,12 +19,31 @@ uv sync
 uv run video-to-model --help
 ```
 
+## 运行平台
+
+GPU 推理只在 **Linux x86_64** 与 **Windows x86_64** 上可用，macOS 只能跑 CPU：
+
+| 平台 | 可用 `--device` | CUDA 12.4 构建 | xFormers |
+|---|---|---|---|
+| Linux x86_64 | `cuda` / `cpu` | ✅ 官方 cu124 wheel | ✅ |
+| Windows x86_64 | `cuda` / `cpu` | ✅ 官方 cu124 wheel | ✅ |
+| macOS（Apple Silicon） | 仅 `cpu` | ❌ 无 cu124 wheel | ❌ 官方不发布 macOS wheel |
+| Linux aarch64（ARM） | 仅 `cpu` | ❌ 无 cu124 wheel | ❌ |
+
+关于 xFormers（上游用来做 memory-efficient attention 的加速库）：
+
+- 官方只发布 `manylinux_x86_64` / `win_amd64` wheel，**没有 macOS 版本**（PyPI 上只有 sdist，在 mac 上源码构建会失败）。因此 `pyproject.toml` 用 PEP 508 marker 把它限定在 Linux/Windows x86_64，macOS 上 `uv sync` 会直接跳过它，而不是报错。
+- 在 macOS / ARM 上运行时，日志会出现 4 行 `xFormers not available`（来自 `dinov2_layers/attention.py`、`dinov2_layers/block.py`、`motion_module/attention.py`、`motion_module/motion_module.py` 的 import 探测）。这是提示不是错误，深度结果不变；代价是回退到普通注意力实现，失去 xFormers 省显存与提速的效果，加大 `--input-size` 时更容易碰显存上限。
+- xFormers 只影响 GPU 上的注意力开销，`--device cpu` 本来就用不到它。
+
+推荐部署环境是 Linux x86_64 GPU 服务器，见下一节。
+
 ## CUDA 版本：固定 12.4
 
 项目固定使用 CUDA 12.4 的 PyTorch 官方构建，**不使用 CUDA 13**：cu13 构建要求较新的驱动，并且已经放弃 Maxwell/Pascal/Volta 架构（GTX 10 系、T4、V100 等小显卡服务器跑不了）；cu124 构建覆盖 sm_50 及以上，驱动要求低得多。
 
 - 版本锁定：`torch==2.6.0` / `torchvision==0.21.0`。官方只为这两个版本发布 cu124 wheel，所以 torch 不能继续用更新的 2.x（2.13+ 只提供 cu126/cu130/cu132）。
-- 取包来源：Linux x86_64 与 Windows x86_64 从 `https://download.pytorch.org/whl/cu124` 拉 `+cu124` wheel；macOS、Linux aarch64 等无 cu124 wheel 的平台自动回退清华 PyPI 镜像。配置见 `pyproject.toml` 的 `[[tool.uv.index]]` 与 `[tool.uv.sources]`。
+- 取包来源：Linux x86_64 与 Windows x86_64 从 `https://download.pytorch.org/whl/cu124` 拉 `+cu124` wheel；`xformers==0.0.29.post3`（依赖严格对应 `torch==2.6.0`）也从同一索引安装。macOS、Linux aarch64 等无 cu124 wheel 的平台自动回退清华 PyPI 镜像。配置见 `pyproject.toml` 的 `[[tool.uv.index]]` 与 `[tool.uv.sources]`。
 - CUDA 运行库：`nvidia-*-cu12==12.4.*`（cuBLAS 12.4.5.8、cudart 12.4.127、cuDNN 9.1.0.70、NCCL 2.21.5）+ `triton==3.2.0`，均由 `uv sync` 自动装好，不需要在服务器上单独安装 CUDA Toolkit。
 - 驱动要求：`nvidia-smi` 显示的 CUDA Version ≥ 12.4（Linux 驱动 ≥ 550）。
 

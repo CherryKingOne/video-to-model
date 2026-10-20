@@ -19,6 +19,10 @@ dependencies = [
     "einops>=0.7",
     "easydict>=1.10",
     "httpx[socks]>=0.28.1",
+    # xFormers 为上游提供 memory_efficient_attention（省显存 + 提速），依赖严格对应 torch 2.6.0。
+    # 官方只发布 manylinux_x86_64 / win_amd64 wheel，没有 macOS 版，所以用 marker 限定平台；
+    # 不加 marker 时 macOS 会回退到 sdist 源码构建并失败。
+    "xformers==0.0.29.post3; (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'win32' and platform_machine == 'AMD64')",
 ]
 
 [project.scripts]
@@ -49,6 +53,10 @@ torch = [
     { index = "pytorch-cu124", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
 ]
 torchvision = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { index = "pytorch-cu124", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+]
+xformers = [
     { index = "pytorch-cu124", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
     { index = "pytorch-cu124", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
 ]
